@@ -1,0 +1,28 @@
+Step 1
+	Install Python 3.10 From Python Exe File Run 
+	Note:- Check Set Environment Variable (Tick Mark On Checkbox)
+	Install visual c++ redistribution via 'VC_redist.x64.exe' (NOTE: ASK FOR ADMIN PASSWORD)
+Step 2
+	open (cmd) command prompt
+        Than Go To Path > cd C:\Users\TEST\AppData\Local\Programs\Python\Python310
+Step 3
+	check python version via command
+	python --version
+	Output Should Be this 'Python 3.10.0'
+Step 4 
+	Run Following Command Step By Step
+
+	pip list
+	pip install --upgrade pip
+	pip install RPLCD
+	pip install gpiozero
+	pip install pyfirmata
+	pip install pyserial
+	pip install tensorflow
+	pip list
+Step 5 TEST tensorflow in python 3.10 (goto search and search for IDLE 3.10)
+
+---
+Arduion
+Go To
+Tools > Library Manager > Search Thingspeak And Install
