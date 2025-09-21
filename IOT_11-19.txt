@@ -1,0 +1,854 @@
+Q11 — Digital Ruler (HC-SR04 + LCD) — Arduino only
+
+Arduino: measures distance and shows cm / inches / feet on 16x2 LCD.
+// Q11_Digital_Ruler.ino
+#include <LiquidCrystal.h>
+
+const int trigPin = 9;
+const int echoPin = 8;
+
+// LCD RS,EN,D4,D5,D6,D7
+LiquidCrystal lcd(7, 6, 5, 4, 3, 2);
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  lcd.begin(16, 2);
+  lcd.print("Digital Ruler");
+  delay(1000);
+  lcd.clear();
+}
+
+long measureDistanceCm() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000UL); // 30ms timeout
+  if (duration == 0) return -1;
+  long distanceCm = duration * 0.0343 / 2;
+  return distanceCm;
+}
+
+void loop() {
+  long cm = measureDistanceCm();
+  lcd.setCursor(0, 0);
+  if (cm < 0) {
+    lcd.print("Out of range   ");
+  } else {
+    float inches = cm * 0.393701;
+    float feet = inches / 12.0;
+    lcd.print("Dist:");
+    lcd.print(cm);
+    lcd.print("cm   ");
+    lcd.setCursor(0, 1);
+    lcd.print("In:");
+    lcd.print(inches,1);
+    lcd.print(" Ft:");
+    lcd.print(feet,2);
+  }
+  delay(300);
+}
+################################################
+Q12 — Weather-Clock (DHT11 + LCD + Serial) — Arduino + Python
+// Q12_WeatherClock.ino
+#include <DHT.h>
+#include <LiquidCrystal.h>
+
+#define DHTPIN 2
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+// LCD RS,EN,D4,D5,D6,D7
+LiquidCrystal lcd(7, 8, 9, 10, 11, 12);
+
+unsigned long previousMillis = 0;
+const unsigned long interval = 1000; // 1s
+unsigned long secondsCount = 0;
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  lcd.begin(16,2);
+  lcd.print("Weather Clock");
+  delay(800);
+  lcd.clear();
+}
+
+void loop() {
+  unsigned long now = millis();
+  if (now - previousMillis >= interval) {
+    previousMillis = now;
+    secondsCount++;
+
+    float temp = dht.readTemperature();
+    if (isnan(temp)) {
+      lcd.setCursor(0,0);
+      lcd.print("DHT error       ");
+      return;
+    }
+
+    unsigned long hrs = (secondsCount / 3600) % 24;
+    unsigned long mins = (secondsCount / 60) % 60;
+    unsigned long secs = secondsCount % 60;
+
+    lcd.setCursor(0, 0);
+    lcd.print("Temp:");
+    lcd.print(temp,1);
+    lcd.print((char)223);
+    lcd.print("C    ");
+
+    lcd.setCursor(0,1);
+    lcd.print("Time:");
+    if (hrs < 10) lcd.print('0');
+    lcd.print(hrs); lcd.print(':');
+    if (mins < 10) lcd.print('0');
+    lcd.print(mins); lcd.print(':');
+    if (secs < 10) lcd.print('0');
+    lcd.print(secs);
+
+    // Send only temperature to serial (Python will timestamp)
+    Serial.println(temp, 1);
+  }
+}
+------------------------Python: read serial, timestamp, insert into SQLite, and plot.
+# Q12_weather_clock_logger_simple.py
+# pip install pyserial matplotlib
+
+import serial, sqlite3
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+SERIAL_PORT = "COM3"   # Change to your Arduino port
+BAUD = 9600
+DB = "q12_weather_clock.db"
+
+# --- Setup database ---
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
+cur.execute("""CREATE TABLE IF NOT EXISTS readings (
+                id INTEGER PRIMARY KEY,
+                ts TEXT,
+                temperature REAL)""")
+conn.commit()
+
+# --- Setup serial ---
+ser = serial.Serial(SERIAL_PORT, BAUD, timeout=2)
+print("Logging... Press Ctrl+C to stop.")
+
+try:
+    while True:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line:
+            continue
+        try:
+            temp = float(line)
+        except ValueError:
+            continue
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("INSERT INTO readings (ts, temperature) VALUES (?, ?)", (ts, temp))
+        conn.commit()
+        print(ts, temp, "C")
+
+except KeyboardInterrupt:
+    print("Stopped logging.")
+
+finally:
+    ser.close()
+    # --- Plot data ---
+    cur.execute("SELECT ts, temperature FROM readings ORDER BY id")
+    rows = cur.fetchall()
+    if rows:
+        times = [r[0] for r in rows]
+        temps = [r[1] for r in rows]
+        plt.plot(temps, marker="o")
+        plt.xlabel("Reading index")
+        plt.ylabel("Temperature (°C)")
+        plt.title("Weather-Clock Log")
+        plt.show()
+    conn.close()
+################################################################################
+
+Q13 — Smart Streetlight (PIR + LDR + LED + Buzzer) — Arduino only
+
+
+// Q13_SmartStreetlight.ino
+const int ldrPin = A0;
+const int pirPin = 2;
+const int ledPin = 10;
+const int buzPin = 11;
+
+unsigned long presenceStart = 0;
+bool presenceActive = false;
+
+void setup() {
+  pinMode(pirPin, INPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(buzPin, OUTPUT);
+  Serial.begin(9600);
+}
+
+bool isDark() {
+  int v = analogRead(ldrPin);
+  // adjust threshold by testing; lower = darker for many LDR circuits depending on wiring
+  return v < 400; // tweak if needed
+}
+
+void loop() {
+  bool motion = digitalRead(pirPin) == HIGH;
+  if (motion && isDark()) {
+    digitalWrite(ledPin, HIGH);
+    if (!presenceActive) {
+      presenceActive = true;
+      presenceStart = millis();
+    } else {
+      unsigned long elapsed = millis() - presenceStart;
+      if (elapsed > 10000) { // 10 seconds
+        tone(buzPin, 2000, 200); // beep as warning
+        delay(300); // short delay to avoid continuous tone
+      }
+    }
+  } else {
+    digitalWrite(ledPin, LOW);
+    presenceActive = false;
+    noTone(buzPin);
+  }
+  delay(200);
+}
+#######################################################
+Q14 — Parking Assistant Pro (HC-SR04 + LEDs + Buzzer) — Arduino only
+// Q14_ParkingAssistant.ino
+const int trigPin = 9;
+const int echoPin = 8;
+const int ledGreen = 4;
+const int ledYellow = 5;
+const int ledRed = 6;
+const int buzPin = 11;
+
+void setup() {
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(ledGreen, OUTPUT);
+  pinMode(ledYellow, OUTPUT);
+  pinMode(ledRed, OUTPUT);
+  pinMode(buzPin, OUTPUT);
+  Serial.begin(9600);
+}
+
+long measureCm() {
+  digitalWrite(trigPin, LOW); delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long d = pulseIn(echoPin, HIGH, 30000UL);
+  if (d==0) return -1;
+  return d * 0.0343 / 2;
+}
+
+void loop() {
+  long cm = measureCm();
+  if (cm < 0) {
+    digitalWrite(ledGreen, LOW);
+    digitalWrite(ledYellow, LOW);
+    digitalWrite(ledRed, LOW);
+    noTone(buzPin);
+  } else {
+    if (cm > 100) {
+      digitalWrite(ledGreen, HIGH);
+      digitalWrite(ledYellow, LOW);
+      digitalWrite(ledRed, LOW);
+      noTone(buzPin);
+    } else if (cm > 40) {
+      digitalWrite(ledGreen, LOW);
+      digitalWrite(ledYellow, HIGH);
+      digitalWrite(ledRed, LOW);
+      noTone(buzPin);
+    } else {
+      digitalWrite(ledGreen, LOW);
+      digitalWrite(ledYellow, LOW);
+      digitalWrite(ledRed, HIGH);
+      // beep faster when closer
+      int freq = map(max(1, (int)cm), 1, 40, 1000, 300); // maps distance to freq
+      tone(buzPin, freq, 100);
+    }
+  }
+  delay(200);
+}
+###################################
+
+
+Q15 — Laser Security Alarm (IR tripwire + LCD + Buzzer + Reset) — Arduino only
+
+// Q15_LaserAlarm.ino
+#include <LiquidCrystal.h>
+
+const int irPin = 12;
+const int buzzPin = 11;
+const int ledPin = 10;
+const int resetBtn = 9;
+
+// LCD
+LiquidCrystal lcd(7, 6, 5, 4, 3, 2);
+
+bool alarm = false;
+
+void setup() {
+  pinMode(irPin, INPUT);
+  pinMode(buzzPin, OUTPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(resetBtn, INPUT_PULLUP);
+  lcd.begin(16,2);
+  Serial.begin(9600);
+  lcd.print("Laser Alarm Ready");
+  delay(800);
+  lcd.clear();
+}
+
+void triggerAlarm() {
+  alarm = true;
+  lcd.clear();
+  lcd.print("!! ALARM !!");
+  Serial.println("ALARM");
+}
+
+void loop() {
+  int irv = digitalRead(irPin); // many IR break sensors go LOW when broken; test and invert if needed
+  int resetState = digitalRead(resetBtn);
+  if (!alarm && irv == LOW) {
+    triggerAlarm();
+  }
+
+  if (alarm) {
+    // flash LED + buzzer
+    digitalWrite(ledPin, millis() % 400 < 200 ? HIGH : LOW);
+    tone(buzzPin, 2000);
+    // reset if button pressed (active LOW)
+    if (resetState == LOW) {
+      alarm = false;
+      noTone(buzzPin);
+      digitalWrite(ledPin, LOW);
+      lcd.clear();
+      lcd.print("Reset - Ready");
+      delay(800);
+      lcd.clear();
+    }
+  } else {
+    noTone(buzzPin);
+    digitalWrite(ledPin, LOW);
+  }
+  delay(50);
+}
+################################################################
+Q16 — Thermal Alert System (DHT11 + Fan (LED) + Buzzer) — Arduino + Python
+
+Arduino: monitors temp; if >35°C, activate fan (simulate with an output), buzzer, and send events over serial. Python logs readings + events to SQLite and plots temp history & alert counts.
+
+
+// Q16_ThermalAlert.ino
+#include <DHT.h>
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+const int fanPin = 10;  // simulate fan with a transistor / relay / LED
+const int buzzPin = 11;
+
+unsigned long lastSend = 0;
+const unsigned long sendInterval = 5000; // send every 5s
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  pinMode(fanPin, OUTPUT);
+  pinMode(buzzPin, OUTPUT);
+}
+
+void loop() {
+  float temp = dht.readTemperature();
+  if (isnan(temp)) {
+    delay(1000);
+    return;
+  }
+  bool alert = (temp > 35.0);
+  if (alert) {
+    digitalWrite(fanPin, HIGH);
+    tone(buzzPin, 1500);
+  } else {
+    digitalWrite(fanPin, LOW);
+    noTone(buzzPin);
+  }
+
+  if (millis() - lastSend > sendInterval) {
+    lastSend = millis();
+    // message format: TEMP,<temperature>,ALERT/OK
+    Serial.print("TEMP,");
+    Serial.print(temp,1);
+    Serial.print(",");
+    Serial.println(alert ? "ALERT" : "OK");
+  }
+  delay(500);
+}
+------------------------------------------------------
+# Q16_thermal_logger_simple.py
+# pip install pyserial matplotlib
+
+import serial, sqlite3
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+SERIAL = "COM3"   # change to your Arduino COM port
+BAUD = 9600
+DB = "q16_thermal.db"
+
+# --- Setup database ---
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
+cur.execute("""CREATE TABLE IF NOT EXISTS readings (
+    id INTEGER PRIMARY KEY,
+    ts TEXT,
+    temperature REAL,
+    status TEXT
+)""")
+conn.commit()
+
+# --- Setup serial ---
+ser = serial.Serial(SERIAL, BAUD, timeout=2)
+print("Logging thermal data... Press Ctrl+C to stop.")
+
+try:
+    while True:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line:
+            continue
+        # expected format: TEMP,36.5,ALERT
+        parts = line.split(",")
+        if len(parts) != 3:
+            continue
+        _, temp_s, status = parts
+        try:
+            temp = float(temp_s)
+        except ValueError:
+            continue
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("INSERT INTO readings (ts, temperature, status) VALUES (?, ?, ?)", (ts, temp, status))
+        conn.commit()
+        print(ts, temp, status)
+
+except KeyboardInterrupt:
+    print("Stopped logging.")
+
+finally:
+    ser.close()
+    # --- Plot ---
+    cur.execute("SELECT temperature FROM readings ORDER BY id")
+    rows = cur.fetchall()
+    if rows:
+        temps = [r[0] for r in rows]
+        plt.plot(temps, marker="o")
+        plt.ylabel("Temperature (°C)")
+        plt.title("Thermal Log")
+        plt.show()
+
+    # --- Count alerts ---
+    cur.execute("SELECT COUNT(*) FROM readings WHERE status='ALERT'")
+    alerts = cur.fetchone()[0]
+    print(f"Total alerts: {alerts}")
+
+    conn.close()
+
+###########################################################
+Q17 — Home Intrusion System Pro (PIR + Ultrasonic + IR + Buzzer) — Arduino + Python
+
+Arduino: PIR triggers, ultrasonic confirms <1m, then alarm and serial “INTRUSION,<distance_cm>”.
+
+
+// Q17_HomeIntrusion.ino
+const int pirPin = 2;
+const int trigPin = 9;
+const int echoPin = 8;
+const int buzzPin = 11;
+const int ledPin = 10;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(pirPin, INPUT);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(buzzPin, OUTPUT);
+  pinMode(ledPin, OUTPUT);
+}
+
+long measureCm() {
+  digitalWrite(trigPin, LOW); delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000UL);
+  if (duration==0) return -1;
+  return duration * 0.0343 / 2;
+}
+
+unsigned long lastAlarm = 0;
+
+void loop() {
+  if (digitalRead(pirPin) == HIGH) {
+    long dist = measureCm();
+    if (dist > 0 && dist < 100) { // confirm within 1m
+      // trigger alarm
+      digitalWrite(ledPin, HIGH);
+      tone(buzzPin, 2000);
+      Serial.print("INTRUSION,");
+      Serial.println(dist);
+      lastAlarm = millis();
+      delay(3000); // short cooldown to avoid flooding
+    }
+  }
+  // auto stop alarm after a short duration
+  if (millis() - lastAlarm > 5000) {
+    noTone(buzzPin);
+    digitalWrite(ledPin, LOW);
+  }
+  delay(100);
+}
+-----------------------------------------
+#import serial
+import sqlite3
+from datetime import datetime
+import matplotlib.pyplot as plt
+from collections import Counter
+
+SER = "COM3"
+BAUD = 9600
+DB = "q17_intrusion.db"
+
+# Initialize database
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS intrusions (
+    id INTEGER PRIMARY KEY,
+    ts TEXT,
+    distance REAL
+)
+""")
+conn.commit()
+
+# Open serial
+ser = serial.Serial(SER, BAUD, timeout=2)
+
+try:
+    while True:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line or not line.startswith("INTRUSION,"):
+            continue
+        try:
+            _, dist = line.split(",")
+            d = float(dist)
+        except:
+            continue
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        cur.execute("INSERT INTO intrusions (ts, distance) VALUES (?, ?)", (ts, d))
+        conn.commit()
+        print(ts, "intrusion dist:", d, "cm")
+
+except KeyboardInterrupt:
+    print("Stopped, plotting")
+
+finally:
+    ser.close()
+    cur.execute("SELECT ts FROM intrusions ORDER BY id")
+    rows = cur.fetchall()
+    if rows:
+        times = [datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S.%f") for r in rows]
+        hours = [t.replace(minute=0, second=0, microsecond=0) for t in times]
+        cnt = Counter(hours)
+        plt.bar(cnt.keys(), cnt.values())  # simple bar plot
+        plt.xticks(rotation=45)
+        plt.show()
+    conn.close()
+
+###############################################################
+
+Q18 — Smart Dustbin Pro (Ultrasonic for lid + Ultrasonic for fill level + Servo) — Arduino + Python
+
+Arduino: hand-detect opens lid via servo; fill-level measured periodically; serial sends FILL,<percent> every minute.
+
+// Q18_SmartDustbin.ino
+#include <Servo.h>
+
+const int servoPin = 9;
+const int handTrig = 7;
+const int handEcho = 6;
+const int lvlTrig = 5;
+const int lvlEcho = 4;
+Servo lid;
+
+unsigned long lastLevelSend = 0;
+const unsigned long levelInterval = 60000; // 1 minute
+
+void setup() {
+  Serial.begin(9600);
+  lid.attach(servoPin);
+  lid.write(0); // closed
+  pinMode(handTrig, OUTPUT);
+  pinMode(handEcho, INPUT);
+  pinMode(lvlTrig, OUTPUT);
+  pinMode(lvlEcho, INPUT);
+}
+
+long measureCm(int trig, int echo) {
+  digitalWrite(trig, LOW); delayMicroseconds(2);
+  digitalWrite(trig, HIGH); delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+  long dur = pulseIn(echo, HIGH, 30000UL);
+  if (dur==0) return -1;
+  return dur * 0.0343 / 2;
+}
+
+void openLid() {
+  lid.write(90);
+}
+
+void closeLid() {
+  lid.write(0);
+}
+
+void loop() {
+  long hand = measureCm(handTrig, handEcho);
+  if (hand > 0 && hand < 20) { // hand close
+    openLid();
+    delay(1200);
+    closeLid();
+  }
+
+  if (millis() - lastLevelSend > levelInterval) {
+    lastLevelSend = millis();
+    long levelDist = measureCm(lvlTrig, lvlEcho);
+    // suppose container depth is 30 cm; calibrate in real unit:
+    float percent = 0;
+    if (levelDist > 0 && levelDist < 300) {
+      float depth = 30.0; // set real depth
+      float occupied = max(0.0, depth - levelDist);
+      percent = min(100.0, (occupied / depth) * 100.0);
+    }
+    Serial.print("FILL,");
+    Serial.println(percent,1);
+  }
+  delay(100);
+}
+---------------------------------------------
+# Q18_dustbin_logger.py
+# pip install pyserial matplotlib
+import serial
+import sqlite3
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+SER = "COM3"
+BAUD = 9600
+DB = "q18_dustbin.db"
+
+# Initialize database
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS filllog (
+    id INTEGER PRIMARY KEY,
+    ts TEXT,
+    percent REAL
+)
+""")
+conn.commit()
+
+# Open serial
+ser = serial.Serial(SER, BAUD, timeout=2)
+
+try:
+    while True:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line or not line.startswith("FILL,"):
+            continue
+        try:
+            _, p = line.split(",")
+            percent = float(p)
+        except:
+            continue
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        cur.execute("INSERT INTO filllog (ts, percent) VALUES (?, ?)", (ts, percent))
+        conn.commit()
+        print(ts, percent)
+
+except KeyboardInterrupt:
+    print("Stopped. Plotting.")
+
+finally:
+    ser.close()
+    cur.execute("SELECT ts, percent FROM filllog ORDER BY id")
+    rows = cur.fetchall()
+    if rows:
+        times = [datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S.%f") for r in rows]
+        vals = [r[1] for r in rows]
+        plt.plot(times, vals, marker='o')  # simple line plot
+        plt.ylabel("Fill %")
+        plt.title("Dustbin Fill Level")
+        plt.xticks(rotation=45)
+        plt.show()
+    conn.close()
+
+
+###########################################
+Q19 — Weather Station Pro (DHT11 + LCD + Buzzer + EEPROM) — Arduino + Python
+
+Arduino: reads DHT11; buzzer if humidity >70%; stores temp/humidity pair to EEPROM once per minute (circular buffer) and sends serial for Python logging.
+
+// Q19_WeatherStation.ino
+#include <DHT.h>
+#include <LiquidCrystal.h>
+#include <EEPROM.h>
+
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+LiquidCrystal lcd(7,8,9,10,11,12);
+const int buzzPin = 11;
+
+const unsigned long sampleInterval = 60000; // 1 minute
+unsigned long lastSample = 0;
+
+const int MAX_SAMPLES = 50;
+const int EEPROM_START = 0; // start address
+int writeIndex = 0;
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  lcd.begin(16,2);
+  lcd.print("Weather Station");
+  delay(800);
+  lcd.clear();
+  // read writeIndex from EEPROM[0]
+  writeIndex = EEPROM.read(0);
+  if (writeIndex < 0 || writeIndex >= MAX_SAMPLES) writeIndex = 0;
+}
+
+void storeToEEPROM(float t, float h) {
+  int addr = EEPROM_START + 1 + (writeIndex * 4); // first byte stores index
+  int tt = int(t * 10.0); // scale
+  int hh = int(h * 10.0);
+  // store two int16 values (4 bytes)
+  EEPROM.update(addr, (tt >> 8) & 0xFF);
+  EEPROM.update(addr+1, tt & 0xFF);
+  EEPROM.update(addr+2, (hh >> 8) & 0xFF);
+  EEPROM.update(addr+3, hh & 0xFF);
+  writeIndex++;
+  if (writeIndex >= MAX_SAMPLES) writeIndex = 0;
+  EEPROM.update(0, writeIndex); // save index to addr 0
+}
+
+void loop() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  if (isnan(t) || isnan(h)) {
+    delay(2000);
+    return;
+  }
+
+  lcd.setCursor(0,0);
+  lcd.print("T:");
+  lcd.print(t,1);
+  lcd.print((char)223);
+  lcd.print("C ");
+  lcd.print("H:");
+  lcd.print(h,0);
+  lcd.print("%  ");
+
+  if (h > 70.0) {
+    tone(buzzPin, 1500);
+  } else {
+    noTone(buzzPin);
+  }
+
+  // send serial in format: WSTA,<temp>,<hum>
+  Serial.print("WSTA,");
+  Serial.print(t,1);
+  Serial.print(",");
+  Serial.println(h,1);
+
+  if (millis() - lastSample > sampleInterval) {
+    lastSample = millis();
+    storeToEEPROM(t, h);
+  }
+  delay(2000);
+}
+-----------------------------------------
+# Q19_weather_station_logger.py
+# pip install pyserial matplotlib
+import serial
+import sqlite3
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+SER = "COM3"
+BAUD = 9600
+DB = "q19_weather.db"
+
+# Initialize database
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS readings (
+    id INTEGER PRIMARY KEY,
+    ts TEXT,
+    temp REAL,
+    hum REAL
+)
+""")
+conn.commit()
+
+# Open serial
+ser = serial.Serial(SER, BAUD, timeout=2)
+
+try:
+    while True:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line or not line.startswith("WSTA,"):
+            continue
+        try:
+            _, t, h = line.split(",")
+            temp = float(t)
+            hum = float(h)
+        except:
+            continue
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        cur.execute("INSERT INTO readings (ts, temp, hum) VALUES (?, ?, ?)", (ts, temp, hum))
+        conn.commit()
+        print(ts, temp, hum)
+
+except KeyboardInterrupt:
+    print("Stopped. Plotting.")
+
+finally:
+    ser.close()
+    cur.execute("SELECT ts, temp, hum FROM readings ORDER BY id")
+    rows = cur.fetchall()
+    if rows:
+        times = [datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S.%f") for r in rows]
+        temps = [r[1] for r in rows]
+        hums = [r[2] for r in rows]
+
+        # Simple 2-row plot
+        plt.subplot(2,1,1)
+        plt.plot(times, temps, marker='o')
+        plt.ylabel("Temp (°C)")
+        plt.subplot(2,1,2)
+        plt.plot(times, hums, marker='o')
+        plt.ylabel("Humidity (%)")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+        
+    conn.close()
+#######################################################
